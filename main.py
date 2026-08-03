@@ -3,10 +3,14 @@ from pydantic import BaseModel,Field,ConfigDict
 from typing import Optional
 from starlette import status
 
+import models
+from database import engine
 
 
 
-app=FastAPI()
+app=FastAPI() 
+
+models.Base.metadata.create_all(bind=engine)
 
 PAPERS=[]
 

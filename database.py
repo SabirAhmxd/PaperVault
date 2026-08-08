@@ -6,7 +6,7 @@ SQLALCHEMY_DATABASE_URL='sqlite:///./paperlab.db'
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL,connect_args={'check_same_thread':False})
 
-Sessionlocal=sessionmaker(autocommit=False, autoflush=False,bind=engine)
+SessionLocal=sessionmaker(autocommit=False, autoflush=False,bind=engine)
 
 Base= declarative_base()
 

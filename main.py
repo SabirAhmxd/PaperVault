@@ -1,10 +1,14 @@
-from fastapi import FastAPI,Path,Query,HTTPException
+from typing import Annotated
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+from fastapi import FastAPI,Path,Query,HTTPException ,Depends
 from pydantic import BaseModel,Field,ConfigDict
 from typing import Optional
 from starlette import status
 
 import models
-from database import engine
+from models import Paper
+from database import engine,SessionLocal
 
 
 
@@ -12,27 +16,20 @@ app=FastAPI()
 
 models.Base.metadata.create_all(bind=engine)
 
+def get_db():
+    db=SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+db_dependency = Annotated[Session,Depends(get_db)]
+
+
 PAPERS=[]
 
-class Paper:
-    id:int
-    title:str
-    authors:str
-    abstract:str
-    year:int
-    reading_status:str
-
-
-    def __init__(self,id,title,author,abstract,year,reading_status):
-        self.id=id
-        self.title =title
-        self.author = author
-        self.abstract = abstract
-        self.year = year
-        self.reading_status=reading_status
-
 class PaperRequest(BaseModel):
-    id : Optional[int]=Field(description='ID id not needed at create',default =None)
+    #id : Optional[int]=Field(description='ID id not needed at create',default =None)
     title : str =Field(min_length=3,max_length=300)
     author : str =Field(min_length=3,max_length=200)
     abstract : str=Field(min_length=2,max_length=5000)
@@ -51,51 +48,45 @@ class PaperRequest(BaseModel):
         }
     )
 
-
-PAPERS=[
-
-    Paper(1,'Title One','Author 1','Cool Paper',2010,'Unread'),
-    Paper(2,'Title Two','Author 2','Cool Paper',2010,'Completed'),
-    Paper(3,'Title Three','Author 3','Cool Paper',2010,'Reading'),
-    Paper(4,'Title Four','Author 4','Bad Paper',2014,'Unread'),
-    Paper(5,'Title Five','Author 5','Decent Paper',2007,'Unread'),
-    Paper(6,'Title One','Author 6','Cool Paper',2010,'Unread'),
-]
-
+ 
+#old : returning list 
+#new : database, deleted old paper class and PAPERS list inside main
 
 @app.get("/papers",status_code=status.HTTP_200_OK)
-async def read_all_papers():
-    return PAPERS
+async def read_all_papers(db:db_dependency):
+    return db.query(Paper).all() 
 
 @app.get("/papers/{paper_id}",status_code=status.HTTP_200_OK)
-async def read_paper(paper_id:int=Path(gt=0)):
-    for paper in PAPERS:
-        if paper.id == paper_id:
-            return paper
-    raise HTTPException(status_code=404,detail='Item not found')
+async def read_paper(db:db_dependency, paper_id:int=Path(gt=0)):
+    paper_model = db.query(Paper).filter(Paper.id==paper_id).first()
+    if paper_model is not None:
+        return paper_model
+
+    raise HTTPException(status_code=404,detail='Paper not found')
 
 
 @app.get("/papers/",status_code=status.HTTP_200_OK)
-async def read_paper_by_year(paper_year:int=Query(gt=1899,lt=2026)):
-    papers_to_return =[]
-    for paper in PAPERS:
-        if paper.year==paper_year:
-            papers_to_return.append(paper)
-    return papers_to_return
+async def read_paper_by_year(db:db_dependency,paper_year:int=Query(gt=1899,lt=2026)):
+    papers=db.query(Paper).filter(Paper.year==paper_year).all()
+
+    if papers is not None:
+        return papers
 
 @app.get("/papers/status/")
-async def read_status(reading_status:str):
-    papers_to_return=[]
-    for paper in PAPERS:
-        if paper.reading_status==reading_status:
-            papers_to_return.append(paper)
-    return papers_to_return
+async def read_status(db:db_dependency,reading_status:str):
+    papers=db.query(Paper).filter(func.lower(Paper.reading_status)==reading_status.casefold()).all()
+
+    if papers is not None:
+        return papers 
 
 
 @app.post("/add-paper",status_code=status.HTTP_201_CREATED)
-async def add_paper(paper_request:PaperRequest):
-    new_paper=Paper(**paper_request.model_dump())
-    PAPERS.append(find_paper_id(new_paper))
+async def add_paper(db:db_dependency,paper_request:PaperRequest):
+    paper_model=Paper(**paper_request.model_dump())
+    
+    db.add(paper_model)
+    db.commit()
+   
 
 def find_paper_id(paper:Paper):
     paper.id =1 if len(PAPERS)==0 else PAPERS[-1].id+1
@@ -104,27 +95,30 @@ def find_paper_id(paper:Paper):
 
 
 
-@app.put("/papers/update_paper",status_code=status.HTTP_204_NO_CONTENT)
-async def update_paper(paper: PaperRequest):
-    paper_changed=False
-    for i in range(len(PAPERS)):
-        if PAPERS[i].id==paper.id:
-            PAPERS[i]=paper
-            paper_changed=True
-    if not paper_changed:
-        raise HTTPException(status_code=404,detail='Item not found')
+@app.put("/papers/{paper_id}",status_code=status.HTTP_204_NO_CONTENT)
+async def update_paper(db:db_dependency,
+                      paper_request: PaperRequest,#PaperRequest needs to be above any path parameter
+                       paper_id:int=Path(gt=0)):
+    paper_model=db.query(Paper).filter(Paper.id==paper_id).first()
+    
+    if paper_model is None:
+        raise HTTPException(status_code=404,detail='Paper not found')
+    paper_model.title=paper_request.title
+    paper_model.abstract=paper_request.abstract
+    paper_model.author=paper_request.author
+    paper_model.year=paper_request.year
+    paper_model.reading_status=paper_request.reading_status
 
-
+    db.add(paper_model)
+    db.commit()
 
     
 @app.delete("/papers/{paper_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_paper(paper_id:int=Path(gt=0)):
-    paper_deleted=False
-    for i in range(len(PAPERS)):
-        if PAPERS[i].id ==paper_id:
-            PAPERS.pop(i)
-            paper_deleted=True
-            break
-    if not paper_deleted:
-        raise HTTPException(status_code=404,detail='Item not found')
-    
+async def delete_paper(db:db_dependency,paper_id:int=Path(gt=0)):
+    paper_model = db.query(Paper).filter(Paper.id==paper_id).first()
+
+    if paper_model is None:
+        raise HTTPException(status_code=404,detail='Paper not found')
+    db.query(Paper).filter(Paper.id==paper_id).delete()
+
+    db.commit()
